@@ -1,0 +1,7 @@
+# 核心依赖（版本号适配Streamlit Cloud环境）
+streamlit>=1.28.0
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.17.0
+# 可选：补充其他可能用到的依赖
+python-dotenv>=1.0.0
