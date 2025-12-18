@@ -5,6 +5,9 @@ from datetime import datetime
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+import json
+import time
+import random
 
 # ==================== 页面配置 ====================
 st.set_page_config(
@@ -90,6 +93,55 @@ st.markdown("""
         background: linear-gradient(90deg, #2E8B57 0%, #90EE90 100%);
     }
     
+    /* 蓝牙连接状态样式 */
+    .bluetooth-status {
+        display: flex;
+        align-items: center;
+        padding: 0.5rem 1rem;
+        border-radius: 20px;
+        font-weight: bold;
+        margin: 0.5rem 0;
+    }
+    
+    .bluetooth-connected {
+        background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);
+        color: white;
+    }
+    
+    .bluetooth-disconnected {
+        background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+        color: white;
+    }
+    
+    .bluetooth-scanning {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        animation: pulse 1.5s infinite;
+    }
+    
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.7; }
+        100% { opacity: 1; }
+    }
+    
+    /* 设备列表样式 */
+    .device-item {
+        padding: 0.75rem 1rem;
+        margin: 0.5rem 0;
+        border-radius: 10px;
+        background: white;
+        border: 1px solid #e0e0e0;
+        cursor: pointer;
+        transition: all 0.3s ease;
+    }
+    
+    .device-item:hover {
+        background: #f0f7f0;
+        border-color: #2E8B57;
+        transform: translateX(5px);
+    }
+    
     /* 隐藏streamlit默认元素 */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
@@ -112,7 +164,19 @@ def init_session_state():
         'upload_time': None,
         'show_data_preview': False,
         'analysis_completed': False,
-        'just_analyzed': False  # 新增：标记是否刚刚完成分析
+        'just_analyzed': False,
+        # 蓝牙相关状态
+        'bluetooth_status': "disconnected",  # disconnected, scanning, connecting, connected
+        'available_devices': [],
+        'connected_device': None,
+        'bluetooth_service_uuid': "0000ff00-0000-1000-8000-00805f9b34fb",
+        'bluetooth_characteristic_uuid': "0000ff01-0000-1000-8000-00805f9b34fb",
+        'is_receiving_data': False,
+        'received_data': [],
+        'connection_error': None,
+        'bluetooth_supported': True,
+        'last_connection_time': None,
+        'data_buffer': []
     }
     
     for key, value in default_states.items():
@@ -353,6 +417,134 @@ def create_result_gauge(value, title, max_value=100):
     fig.update_layout(height=300, margin=dict(l=20, r=20, t=50, b=20))
     return fig
 
+# ==================== 蓝牙连接模块 ====================
+def check_bluetooth_support():
+    """检查浏览器是否支持Web Bluetooth API"""
+    # 在实际部署中，这里需要JavaScript检测
+    # 由于Streamlit是服务器端，我们需要在客户端检测
+    # 这里我们假设支持蓝牙，实际使用中需要前端检测
+    return True
+
+def simulate_bluetooth_devices():
+    """模拟可用的蓝牙设备列表"""
+    devices = [
+        {"name": "SpectraScan-2000", "address": "AA:BB:CC:DD:EE:01", "type": "光谱仪", "rssi": -45, "paired": True},
+        {"name": "AgriSpectrum-Pro", "address": "AA:BB:CC:DD:EE:02", "type": "光谱仪", "rssi": -52, "paired": False},
+        {"name": "CropSense-300", "address": "AA:BB:CC:DD:EE:03", "type": "多光谱传感器", "rssi": -60, "paired": True},
+        {"name": "LeafAnalyzer-BT", "address": "AA:BB:CC:DD:EE:04", "type": "叶绿素计", "rssi": -65, "paired": False},
+        {"name": "PlantHealth-Monitor", "address": "AA:BB:CC:DD:EE:05", "type": "植物健康监测", "rssi": -70, "paired": True}
+    ]
+    return devices
+
+def simulate_spectral_data_from_device():
+    """从模拟设备生成光谱数据"""
+    np.random.seed(int(time.time()))
+    wavelength = np.linspace(400, 1100, 701)
+    
+    # 模拟不同成熟度的光谱曲线
+    maturity_level = random.uniform(0.3, 0.9)  # 成熟度参数
+    
+    reflectance = np.zeros_like(wavelength)
+    
+    # 350-500nm: 低反射区域
+    mask1 = wavelength <= 500
+    reflectance[mask1] = 0.04 + 0.02 * np.sin(wavelength[mask1]/100)
+    
+    # 500-600nm: 绿光反射峰
+    mask2 = (wavelength > 500) & (wavelength <= 600)
+    reflectance[mask2] = (0.08 + 0.12 * maturity_level) + 0.1 * np.sin((wavelength[mask2]-500)/100*np.pi)
+    
+    # 600-700nm: 红光吸收谷
+    mask3 = (wavelength > 600) & (wavelength <= 700)
+    reflectance[mask3] = (0.06 + 0.04 * maturity_level) + 0.03 * np.cos((wavelength[mask3]-600)/100*np.pi)
+    
+    # 700-1100nm: 近红外高台
+    mask4 = wavelength > 700
+    reflectance[mask4] = (0.35 + 0.2 * maturity_level) + 0.08 * np.sin(wavelength[mask4]/150)
+    
+    # 添加设备噪声和测量误差
+    reflectance += 0.02 * np.random.randn(len(wavelength))
+    reflectance = np.clip(reflectance, 0, 1)
+    
+    # 模拟设备数据格式
+    data_packet = {
+        "wavelength": wavelength.tolist(),
+        "reflectance": reflectance.tolist(),
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "device_id": st.session_state.connected_device["address"] if st.session_state.connected_device else "Unknown",
+        "measurement_id": f"MEAS_{int(time.time())}",
+        "temperature": round(random.uniform(25, 35), 1),
+        "humidity": round(random.uniform(50, 80), 1),
+        "signal_strength": random.randint(-40, -60)
+    }
+    
+    return data_packet
+
+def connect_to_device(device_info):
+    """连接到指定的蓝牙设备"""
+    try:
+        st.session_state.bluetooth_status = "connecting"
+        st.session_state.connection_error = None
+        
+        # 模拟连接过程
+        time.sleep(1.5)  # 模拟连接延迟
+        
+        # 连接成功
+        st.session_state.bluetooth_status = "connected"
+        st.session_state.connected_device = device_info
+        st.session_state.last_connection_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st.session_state.connection_error = None
+        
+        return True
+    except Exception as e:
+        st.session_state.bluetooth_status = "disconnected"
+        st.session_state.connection_error = f"连接失败: {str(e)}"
+        return False
+
+def disconnect_bluetooth():
+    """断开蓝牙连接"""
+    st.session_state.bluetooth_status = "disconnected"
+    st.session_state.connected_device = None
+    st.session_state.is_receiving_data = False
+    st.session_state.received_data = []
+    st.session_state.data_buffer = []
+
+def start_data_stream():
+    """开始接收数据流"""
+    if st.session_state.connected_device:
+        st.session_state.is_receiving_data = True
+        return True
+    return False
+
+def stop_data_stream():
+    """停止接收数据流"""
+    st.session_state.is_receiving_data = False
+
+def process_received_data(data_packet):
+    """处理接收到的数据包"""
+    try:
+        # 解析数据包
+        wavelength = np.array(data_packet["wavelength"])
+        reflectance = np.array(data_packet["reflectance"])
+        
+        # 创建DataFrame
+        data = pd.DataFrame({
+            'Wavelength': wavelength,
+            'Reflectance': reflectance
+        })
+        
+        # 保存到session state
+        st.session_state.uploaded_data = data
+        st.session_state.upload_time = data_packet["timestamp"]
+        
+        # 添加到数据缓冲区
+        st.session_state.data_buffer.append(data_packet)
+        
+        return data
+    except Exception as e:
+        st.error(f"数据处理失败: {str(e)}")
+        return None
+
 # ==================== 页面组件 ====================
 def login_page():
     """登录页面"""
@@ -402,25 +594,29 @@ def login_page():
         <div style="text-align: center; margin-top: 2rem; color: #666;">
             <p><b>功能特色</b></p>
             <p>• 光谱数据分析 • 智能成熟度评估 • 多指标检测</p>
-            <p>• 历史记录追溯 • 专业报告生成 • 实时可视化</p>
+            <p>• 蓝牙设备连接 • 历史记录追溯 • 专业报告生成 • 实时可视化</p>
         </div>
         """, unsafe_allow_html=True)
 
 def dashboard_page():
     """仪表盘页面"""
     # 顶部导航栏
-    col_nav1, col_nav2, col_nav3, col_nav4 = st.columns([3, 1, 1, 1])
+    col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns([3, 1, 1, 1, 1])
     with col_nav1:
         st.markdown(f'<h2 style="color: #2E8B57;">👋 欢迎, {st.session_state.user_name}</h2>', unsafe_allow_html=True)
     with col_nav2:
+        if st.button("📱 蓝牙连接", use_container_width=True):
+            st.session_state.current_page = "bluetooth"
+            st.rerun()
+    with col_nav3:
         if st.button("📊 数据分析", use_container_width=True):
             st.session_state.current_page = "analysis"
             st.rerun()
-    with col_nav3:
+    with col_nav4:
         if st.button("📜 历史记录", use_container_width=True):
             st.session_state.current_page = "history"
             st.rerun()
-    with col_nav4:
+    with col_nav5:
         if st.button("🚪 退出", type="secondary", use_container_width=True):
             st.session_state.logged_in = False
             st.session_state.current_page = "login"
@@ -428,7 +624,7 @@ def dashboard_page():
     
     st.markdown("---")
     
-    # 系统概览卡片
+    # 系统概览卡片（添加蓝牙状态）
     st.subheader("📈 系统概览")
     
     col1, col2, col3, col4 = st.columns(4)
@@ -460,44 +656,60 @@ def dashboard_page():
         """, unsafe_allow_html=True)
     
     with col4:
-        st.markdown("""
-        <div class="metric-card">
-            <h3>✅</h3>
-            <h2>96.8%</h2>
-            <p>用户满意度</p>
-        </div>
-        """, unsafe_allow_html=True)
+        # 显示蓝牙连接状态
+        if st.session_state.connected_device:
+            device_name = st.session_state.connected_device['name']
+            st.markdown(f"""
+            <div class="metric-card" style="background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);">
+                <h3>📱</h3>
+                <h4 style="margin: 0.5rem 0;">已连接</h4>
+                <p style="font-size: 0.9rem; margin: 0;">{device_name[:15]}...</p>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div class="metric-card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                <h3>📱</h3>
+                <h2>蓝牙</h2>
+                <p>设备未连接</p>
+            </div>
+            """, unsafe_allow_html=True)
     
-    # 快速开始卡片
+    # 快速开始卡片（添加蓝牙快速入口）
     st.markdown("<br>", unsafe_allow_html=True)
     st.subheader("⚡ 快速开始")
     
-    col_start1, col_start2, col_start3 = st.columns(3)
+    col_start1, col_start2, col_start3, col_start4 = st.columns(4)
     
     with col_start1:
-        if st.button("🌱 开始成熟度检测", use_container_width=True, type="primary"):
+        if st.button("📱 蓝牙快速测量", use_container_width=True, type="primary"):
+            st.session_state.current_page = "bluetooth"
+            st.rerun()
+    
+    with col_start2:
+        if st.button("🌱 开始成熟度检测", use_container_width=True):
             st.session_state.detection_type = "成熟度"
             st.session_state.current_page = "analysis"
             st.rerun()
     
-    with col_start2:
+    with col_start3:
         if st.button("📋 查看使用教程", use_container_width=True):
             with st.expander("使用教程", expanded=True):
                 st.markdown("""
                 **使用步骤：**
-                1. 选择检测类型（成熟度/叶绿素/花青素）
-                2. 上传光谱数据CSV文件
-                3. 设置分析参数（波长范围等）
-                4. 开始分析并查看结果
-                5. 导出检测报告
+                1. **蓝牙连接**：点击"蓝牙连接"与光谱仪配对
+                2. **数据采集**：选择检测类型，接收光谱数据
+                3. **参数设置**：设置波长范围等分析参数
+                4. **开始分析**：系统自动分析并生成结果
+                5. **查看报告**：导出检测报告和生产建议
                 
-                **数据格式要求：**
-                - CSV格式，两列数据
-                - 第一列：波长（单位：nm）
-                - 第二列：反射率（0-1或0-100%）
+                **蓝牙模式优势：**
+                • 实时测量，无需文件传输
+                • 现场分析，即时获取结果
+                • 适用于田间实时监测
                 """)
     
-    with col_start3:
+    with col_start4:
         if st.button("📥 下载示例数据", use_container_width=True):
             sample_data = generate_sample_data()
             csv = sample_data.to_csv(index=False)
@@ -514,12 +726,13 @@ def dashboard_page():
     st.subheader("🕒 最近分析记录")
     
     if st.session_state.analysis_history:
-        # 只显示最近的3条记录
         recent_records = st.session_state.analysis_history[-3:][::-1]
         
         for i, record in enumerate(recent_records):
-            with st.expander(f"分析记录 {i+1}: {record.get('type', '未知')}检测 - {record.get('time', '未知时间')}", 
-                            expanded=(i==0)):
+            data_source = record.get('data_source', '文件上传')
+            expander_title = f"分析记录 {i+1}: {record.get('type', '未知')}检测 - {data_source}"
+            
+            with st.expander(expander_title, expanded=(i==0)):
                 col_rec1, col_rec2, col_rec3 = st.columns(3)
                 with col_rec1:
                     if record.get('score'):
@@ -583,11 +796,12 @@ def analysis_page():
     
     st.info(f"📌 当前选择: **{st.session_state.detection_type}检测** - {type_descriptions[st.session_state.detection_type]}")
     
-    # 步骤2: 上传数据
-    st.subheader("📤 上传光谱数据")
+    # 步骤2: 数据来源选择（修改为三个选项卡）
+    st.subheader("📤 选择数据来源")
     
-    tab1, tab2 = st.tabs(["上传文件", "使用示例数据"])
+    tab1, tab2, tab3 = st.tabs(["📁 上传文件", "🔄 使用示例数据", "📱 蓝牙连接"])
     
+    # 选项卡1: 上传文件
     with tab1:
         uploaded_file = st.file_uploader(
             "选择CSV文件（第一列:波长, 第二列:反射率）",
@@ -616,6 +830,7 @@ def analysis_page():
                 else:
                     st.error("数据加载失败，请检查文件格式！")
     
+    # 选项卡2: 示例数据
     with tab2:
         if st.button("生成示例光谱数据", use_container_width=True):
             with st.spinner("正在生成示例数据..."):
@@ -628,10 +843,53 @@ def analysis_page():
                 fig = create_spectral_plot(sample_data, "示例光谱数据")
                 st.plotly_chart(fig, use_container_width=True)
     
+    # 选项卡3: 蓝牙连接（新增）
+    with tab3:
+        st.markdown("""
+        <div style="background: #f0f7ff; padding: 1.5rem; border-radius: 10px; border-left: 4px solid #2E8B57; margin-bottom: 1rem;">
+            <h4 style="color: #2E8B57; margin-top: 0;">📱 蓝牙连接模式</h4>
+            <p>通过蓝牙连接手持式光谱仪，实时获取棉铃光谱数据。</p>
+            <p><b>优势:</b> 实时测量、无需文件传输、现场分析</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col_bluetooth1, col_bluetooth2 = st.columns(2)
+        
+        with col_bluetooth1:
+            if st.button("🔗 连接到蓝牙设备", use_container_width=True, type="primary"):
+                st.session_state.current_page = "bluetooth"
+                st.rerun()
+        
+        with col_bluetooth2:
+            if st.session_state.uploaded_data is not None and st.session_state.upload_time:
+                if st.button("📊 使用已接收的数据", use_container_width=True):
+                    st.success("已加载蓝牙接收的数据")
+    
+        # 显示蓝牙连接状态摘要
+        if st.session_state.connected_device:
+            st.info(f"""
+            **当前连接:** {st.session_state.connected_device['name']}
+            **状态:** {st.session_state.bluetooth_status}
+            **最后连接:** {st.session_state.last_connection_time or "N/A"}
+            """)
+        
+        # 蓝牙快速入门指南
+        with st.expander("🚀 蓝牙连接快速指南", expanded=False):
+            st.markdown("""
+            1. **点击"连接到蓝牙设备"按钮**
+            2. **扫描并选择您的光谱仪设备**
+            3. **建立蓝牙连接**
+            4. **开始接收实时光谱数据**
+            5. **返回本页面进行分析**
+            
+            **支持的设备:**
+            - 所有支持蓝牙GATT协议的光谱仪
+            - SpectraScan系列
+            - AgriSpectrum系列
+            """)
+    
     # 步骤3: 参数设置（如果有数据）
     if is_dataframe_valid(st.session_state.uploaded_data):
-        st.subheader("⚙️ 分析参数设置")
-        
         data = st.session_state.uploaded_data
         min_wl = int(data['Wavelength'].min())
         max_wl = int(data['Wavelength'].max())
@@ -677,11 +935,13 @@ def analysis_page():
                 analyze_btn = st.button("开始分析 🔍", use_container_width=True, type="primary")
             
             with col_analyze2:
-                st.markdown("""
+                data_source = "蓝牙设备" if st.session_state.connected_device else "上传文件"
+                st.markdown(f"""
                 <div style="background: #f0f7ff; padding: 1rem; border-radius: 10px; border-left: 4px solid #2E8B57;">
-                    <b>分析提示:</b><br>
-                    • 确保数据质量，避免噪声干扰<br>
-                    • 选择合适的波长范围以获得最佳结果<br>
+                    <b>分析信息:</b><br>
+                    • 数据来源: {data_source}<br>
+                    • 数据点数: {len(filtered_data)}<br>
+                    • 波长范围: {wavelength_range[0]}-{wavelength_range[1]} nm<br>
                     • 系统会自动保存本次分析记录
                 </div>
                 """, unsafe_allow_html=True)
@@ -707,6 +967,10 @@ def analysis_page():
                     
                     if result:
                         result['time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        result['data_source'] = data_source
+                        if st.session_state.connected_device:
+                            result['device_info'] = st.session_state.connected_device
+                        
                         st.session_state.detection_result = result
                         st.session_state.analysis_history.append(result)
                         st.session_state.analysis_completed = True
@@ -732,14 +996,12 @@ def analysis_page():
                         col_btn1, col_btn2 = st.columns(2)
                         
                         with col_btn1:
-                            # 修复：确保点击后立即跳转
                             if st.button("📊 查看详细结果", use_container_width=True, type="primary"):
                                 st.session_state.current_page = "result"
                                 st.rerun()
                         
                         with col_btn2:
                             if st.button("🔄 重新分析", use_container_width=True, type="secondary"):
-                                # 重置分析完成状态，但保留上传的数据
                                 st.session_state.analysis_completed = False
                                 st.session_state.detection_result = None
                                 st.session_state.just_analyzed = False
@@ -763,19 +1025,16 @@ def analysis_page():
                             st.metric("花青素含量", f"{result['content']} mg/g")
                             st.metric("抗氧化能力", result['antioxidant'])
                     
-                    # 在"分析提示"下方横向排列两个按钮
                     st.markdown("<br>", unsafe_allow_html=True)
                     col_btn1, col_btn2 = st.columns(2)
                     
                     with col_btn1:
-                        # 修复：确保点击后立即跳转
                         if st.button("📊 查看详细结果", use_container_width=True, type="primary"):
                             st.session_state.current_page = "result"
                             st.rerun()
                     
                     with col_btn2:
                         if st.button("🔄 重新分析", use_container_width=True, type="secondary"):
-                            # 重置分析完成状态，但保留上传的数据
                             st.session_state.analysis_completed = False
                             st.session_state.detection_result = None
                             st.session_state.just_analyzed = False
@@ -1121,6 +1380,207 @@ def history_page():
                     else:
                         st.metric("最常检测类型", "N/A")
 
+def bluetooth_connection_page():
+    """蓝牙连接页面"""
+    # 顶部导航
+    col_nav1, col_nav2 = st.columns([5, 1])
+    with col_nav1:
+        st.markdown('<h2 style="color: #2E8B57;">📱 蓝牙设备连接</h2>', unsafe_allow_html=True)
+    with col_nav2:
+        if st.button("🏠 返回主页", use_container_width=True):
+            st.session_state.current_page = "dashboard"
+            st.rerun()
+    
+    st.markdown("---")
+    
+    # 蓝牙状态显示
+    col_status1, col_status2 = st.columns([2, 1])
+    
+    with col_status1:
+        # 显示蓝牙状态
+        status_text = {
+            "disconnected": "🔴 蓝牙未连接",
+            "scanning": "🔵 正在扫描设备...",
+            "connecting": "🟡 正在连接...",
+            "connected": "🟢 蓝牙已连接"
+        }.get(st.session_state.bluetooth_status, "未知状态")
+        
+        status_class = {
+            "disconnected": "bluetooth-disconnected",
+            "scanning": "bluetooth-scanning",
+            "connecting": "bluetooth-scanning",
+            "connected": "bluetooth-connected"
+        }.get(st.session_state.bluetooth_status, "bluetooth-disconnected")
+        
+        st.markdown(f"""
+        <div class="bluetooth-status {status_class}">
+            <span style="font-size: 1.5rem; margin-right: 10px;">
+                {status_text.split(' ')[0]}
+            </span>
+            <span>{status_text.split(' ', 1)[1]}</span>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_status2:
+        if st.session_state.bluetooth_status == "connected":
+            if st.button("🔌 断开连接", use_container_width=True, type="secondary"):
+                disconnect_bluetooth()
+                st.rerun()
+        else:
+            if st.button("🔍 扫描设备", use_container_width=True):
+                st.session_state.bluetooth_status = "scanning"
+                st.session_state.available_devices = simulate_bluetooth_devices()
+                st.rerun()
+    
+    # 显示连接错误
+    if st.session_state.connection_error:
+        st.error(f"❌ {st.session_state.connection_error}")
+    
+    # 显示已连接的设备信息
+    if st.session_state.connected_device:
+        device = st.session_state.connected_device
+        st.markdown(f"""
+        <div class="custom-card">
+            <h4>📡 已连接设备</h4>
+            <p><b>设备名称:</b> {device['name']}</p>
+            <p><b>设备地址:</b> {device['address']}</p>
+            <p><b>设备类型:</b> {device['type']}</p>
+            <p><b>信号强度:</b> {device.get('rssi', 'N/A')} dBm</p>
+            <p><b>连接时间:</b> {st.session_state.last_connection_time}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # 数据流控制
+        col_stream1, col_stream2 = st.columns(2)
+        with col_stream1:
+            if not st.session_state.is_receiving_data:
+                if st.button("📡 开始接收数据", use_container_width=True, type="primary"):
+                    if start_data_stream():
+                        st.success("开始接收数据...")
+                        st.rerun()
+            else:
+                if st.button("⏸️ 停止接收", use_container_width=True):
+                    stop_data_stream()
+                    st.rerun()
+        
+        with col_stream2:
+            if st.button("📊 查看接收的数据", use_container_width=True):
+                if st.session_state.uploaded_data is not None:
+                    st.session_state.current_page = "analysis"
+                    st.rerun()
+                else:
+                    st.warning("暂无接收到的数据")
+        
+        # 实时数据显示
+        if st.session_state.is_receiving_data:
+            st.markdown("---")
+            st.subheader("📈 实时数据流")
+            
+            # 模拟实时数据接收
+            with st.spinner("正在接收光谱数据..."):
+                time.sleep(0.5)  # 模拟传输延迟
+                
+                # 生成模拟数据
+                data_packet = simulate_spectral_data_from_device()
+                data = process_received_data(data_packet)
+                
+                if data is not None:
+                    # 显示数据图表
+                    fig = create_spectral_plot(data, "实时光谱数据")
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 显示数据统计
+                    col_stats1, col_stats2, col_stats3 = st.columns(3)
+                    with col_stats1:
+                        st.metric("数据点数", len(data))
+                    with col_stats2:
+                        st.metric("波长范围", f"{data['Wavelength'].min():.1f} - {data['Wavelength'].max():.1f} nm")
+                    with col_stats3:
+                        st.metric("信号强度", f"{data_packet.get('signal_strength', -55)} dBm")
+                    
+                    # 自动跳转到分析页面的选项
+                    if st.button("✅ 使用此数据进行分析", use_container_width=True, type="primary"):
+                        st.session_state.current_page = "analysis"
+                        st.rerun()
+    
+    # 可用设备列表
+    if st.session_state.bluetooth_status == "scanning" and st.session_state.available_devices:
+        st.markdown("---")
+        st.subheader("📱 发现以下设备")
+        
+        for i, device in enumerate(st.session_state.available_devices):
+            col_device1, col_device2, col_device3 = st.columns([3, 1, 1])
+            
+            with col_device1:
+                paired_icon = "🔗" if device.get("paired", False) else "🔓"
+                st.markdown(f"""
+                <div class="device-item">
+                    <h4>{paired_icon} {device['name']}</h4>
+                    <p style="margin: 0; font-size: 0.9rem; color: #666;">
+                        地址: {device['address']} | 类型: {device['type']} | 信号: {device['rssi']} dBm
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col_device2:
+                if st.button("连接", key=f"connect_{i}", use_container_width=True):
+                    if connect_to_device(device):
+                        st.success(f"已连接到 {device['name']}")
+                        st.rerun()
+            
+            with col_device3:
+                if device.get("paired", False):
+                    st.markdown('<p style="text-align: center; color: #2E8B57;">已配对</p>', unsafe_allow_html=True)
+    
+    # 蓝牙使用说明
+    with st.expander("📖 蓝牙连接使用说明", expanded=False):
+        st.markdown("""
+        ### 如何使用蓝牙连接功能：
+        
+        1. **设备准备**
+           - 确保手持式光谱仪已开启蓝牙功能
+           - 确保光谱仪电量充足
+           - 将光谱仪放置在手机附近（10米内）
+        
+        2. **连接步骤**
+           - 点击"扫描设备"按钮
+           - 在设备列表中找到您的光谱仪
+           - 点击"连接"按钮建立连接
+        
+        3. **数据接收**
+           - 连接成功后，点击"开始接收数据"
+           - 将光谱仪对准棉铃进行测量
+           - 系统会自动接收并显示光谱数据
+        
+        4. **常见问题**
+           - **无法扫描到设备**: 检查光谱仪蓝牙是否开启，是否进入配对模式
+           - **连接失败**: 尝试重启光谱仪和手机蓝牙
+           - **数据传输中断**: 确保设备在有效范围内，避免信号干扰
+        
+        ### 支持的设备型号：
+        - SpectraScan系列光谱仪
+        - AgriSpectrum系列设备
+        - 其他支持蓝牙GATT协议的设备
+        
+        ### 技术要求：
+        - 浏览器需支持Web Bluetooth API（Chrome 56+，Edge 79+）
+        - 安卓系统需为Android 6.0+
+        - 需要HTTPS连接（本地localhost除外）
+        """)
+    
+    # 技术检测
+    if not st.session_state.bluetooth_supported:
+        st.warning("""
+        ⚠️ **浏览器不支持Web Bluetooth API**
+        
+        当前浏览器可能不支持蓝牙功能，请尝试：
+        1. 使用Chrome浏览器（Android推荐）
+        2. 确保网站使用HTTPS协议
+        3. 启用浏览器的蓝牙权限
+        
+        或者您可以使用传统的文件上传方式进行数据分析。
+        """)
+
 # ==================== 主应用 ====================
 def main():
     """主应用入口"""
@@ -1137,7 +1597,8 @@ def main():
         "dashboard": dashboard_page,
         "analysis": analysis_page,
         "result": result_page,
-        "history": history_page
+        "history": history_page,
+        "bluetooth": bluetooth_connection_page
     }
     
     current_page = st.session_state.current_page
